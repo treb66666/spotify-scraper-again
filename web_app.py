@@ -25,9 +25,8 @@ def get_spotify_streams_playwright(artist_id):
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
-        # Using a standard laptop viewport size
         context = browser.new_context(
-            viewport={'width': 1280, 'height': 800},
+            viewport={'width': 1280, 'height': 900},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
@@ -46,27 +45,26 @@ def get_spotify_streams_playwright(artist_id):
         
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(3000)
 
-            # --- 1. GET 10 TRACKS ---
+            # --- 1. GET TOP 10 TRACKS ---
             see_more = page.locator('button', has_text="See more").first
             if see_more.is_visible():
                 see_more.click(force=True)
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(1000)
 
             rows = page.query_selector_all('[data-testid="tracklist-row"]')
             for row in rows[:10]:
                 lines = [l.strip() for l in row.inner_text().split('\n') if l.strip()]
                 if len(lines) >= 2:
-                    
-                    # Grab Title (First item that isn't a number or the 'E' explicit tag)
+                    # Filter out list numbers and the "E" explicit tag to get the real track name
                     name = "Unknown"
                     for line in lines:
                         if not line.isdigit() and line != 'E':
                             name = line
                             break
                             
-                    # Grab Streams (First large number)
+                    # Find the first large number block for streams
                     streams = "Unknown"
                     for line in lines:
                         clean_num = line.replace(',', '')
@@ -76,38 +74,39 @@ def get_spotify_streams_playwright(artist_id):
                             
                     tracks.append({'name': name, 'streams': streams})
 
-            # --- 2. CAREFUL SCROLL TO ABOUT SECTION ---
+            # --- 2. SCROLL TO THE ABOUT CARD ---
             about_section = page.locator('section[data-testid="about"]')
             
-            # Press PageDown sequentially until the About section is visible
-            for _ in range(15):
+            # Force the page to scroll down until the About card loads into the DOM
+            for _ in range(12):
                 if about_section.is_visible():
                     break
                 page.keyboard.press("PageDown")
-                page.wait_for_timeout(600)
+                page.wait_for_timeout(500)
 
             if about_section.is_visible():
                 about_section.scroll_into_view_if_needed()
                 page.wait_for_timeout(1000)
 
                 # --- 3. CLICK THE IMAGE ---
+                # Click the dead-center of the About card to trigger the modal (avoids clicking random text)
                 box = about_section.bounding_box()
                 if box:
-                    # Click inside the top quarter of the card (where the image is)
-                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
+                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
                 else:
                     about_section.click(force=True)
 
-                page.wait_for_timeout(3000) # Wait for popup modal to fully open
+                page.wait_for_timeout(2500) # Wait for the overlay modal to pop up
 
-                # --- 4. SCROLL INSIDE THE MODAL ---
+                # --- 4. SCROLL DOWN INSIDE THE MODAL ---
                 dialog = page.locator('[role="dialog"]')
                 if dialog.is_visible():
-                    # Click near the top-left edge of the dialog to focus it without hitting a link
-                    dialog.click(position={"x": 10, "y": 10}) 
-                    
-                    # Scroll down inside the dialog
-                    for _ in range(4):
+                    # Click slightly inside the dialog to guarantee focus, then scroll
+                    dialog_box = dialog.bounding_box()
+                    if dialog_box:
+                        page.mouse.click(dialog_box["x"] + 10, dialog_box["y"] + 10)
+                        
+                    for _ in range(5):
                         page.keyboard.press("PageDown")
                         page.wait_for_timeout(500)
                         
@@ -115,19 +114,19 @@ def get_spotify_streams_playwright(artist_id):
                 else:
                     body_text = page.inner_text('body')
 
-                # --- 5. EXTRACT CITIES ---
-                if "Where people listen" in body_text:
-                    parts = body_text.split("Where people listen")
-                    if len(parts) > 1:
-                        lines = [l.strip() for l in parts[1].split('\n') if l.strip()]
-                        for i, line in enumerate(lines):
-                            if "listeners" in line.lower() and i > 0:
-                                city = lines[i-1]
-                                count = line.replace("listeners", "").strip()
-                                # Prevent grabbing single-letter artifacts
-                                if len(cities_data) < 5 and len(city) > 2:
-                                    cities_data.append({"City": city, "Listeners": count})
+                # --- 5. EXTRACT EXACT CITIES AND LISTENERS ---
+                lines = [l.strip() for l in body_text.split('\n') if l.strip()]
+                for i, line in enumerate(lines):
+                    # We are looking for lines exactly like "2,033,580 listeners"
+                    if "listeners" in line.lower() and "monthly" not in line.lower() and i > 0:
+                        city = lines[i-1]
+                        count = line.replace("listeners", "").strip()
+                        
+                        # Validate that it is a city and not empty
+                        if len(cities_data) < 5 and len(city) > 2:
+                            cities_data.append({"City": city, "Listeners": count})
 
+            # Debugging screenshot if cities still fail
             if not cities_data:
                 page.screenshot(path="debug_screenshot.png")
 
@@ -179,23 +178,26 @@ st.title("🎧 Spotify Artist Insights")
 query = st.text_input("Enter Artist Name or URL")
 
 if st.button("Get Data"):
-    with st.spinner("Scraping Spotify (this takes ~15 seconds to safely scroll and parse)"):
+    with st.spinner("Scraping Spotify (navigating modal and pulling cities)..."):
         results, cities, err = perform_search(query)
         if err:
             st.error(f"Error: {err}")
         else:
             c1, c2 = st.columns([2, 1])
             with c1:
-                st.subheader("Top Tracks")
+                st.subheader("Top 10 Tracks")
                 if results:
-                    st.dataframe(pd.DataFrame(results), use_container_width=True)
+                    # Hides the row index numbers for a cleaner look
+                    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
                 else:
                     st.warning("Could not pull tracks.")
             with c2:
                 st.subheader("Top 5 Cities")
                 if cities:
                     for c in cities:
-                        st.write(f"**{c['City']}**: {c['Listeners']} listeners")
+                        st.write(f"**{c['City']}**")
+                        st.write(f"{c['Listeners']} listeners")
+                        st.divider()
                 else:
                     st.warning("Could not locate city data. Check the debug image below.")
                     if os.path.exists("debug_screenshot.png"):
