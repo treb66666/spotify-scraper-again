@@ -4,6 +4,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 from playwright.sync_api import sync_playwright
 import pandas as pd
 import os
+import json
+import re
 import subprocess
 
 # --- CACHE PLAYWRIGHT INSTALLATION ---
@@ -14,28 +16,10 @@ def install_playwright():
 
 install_playwright()
 
-def extract_values(obj, target_key):
-    """Recursively pulls all values of a specified key from nested JSON payloads."""
-    arr = []
-    def extract(obj, arr, key):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k == key:
-                    arr.append(v)
-                elif isinstance(v, (dict, list)):
-                    extract(v, arr, key)
-        elif isinstance(obj, list):
-            for item in obj:
-                extract(item, arr, key)
-        return arr
-    return extract(obj, arr, target_key)
-
 def get_spotify_streams_playwright(artist_id):
-    # Using the official URL to guarantee the background API endpoints fire correctly
     url = f"https://open.spotify.com/artist/{artist_id}"
-    
-    captured_tracks = []
-    captured_cities = []
+    tracks = []
+    cities_data = []
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -47,83 +31,112 @@ def get_spotify_streams_playwright(artist_id):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
-        # --- THE NETWORK INTERCEPTOR ---
-        def handle_response(response):
-            # Target Spotify's internal 'pathfinder' GraphQL endpoints
-            if "pathfinder" in response.url and response.request.method != "OPTIONS":
+        if os.path.exists("cookies.json"):
+            with open("cookies.json", "r") as f:
+                cookies = json.load(f)
+                for cookie in cookies:
+                    if "domain" in cookie:
+                        cookie["domain"] = ".spotify.com"
                 try:
-                    # Only parse valid JSON responses
-                    if "application/json" in response.headers.get("content-type", ""):
-                        data = response.json()
-                        
-                        # 1. Intercept Top Tracks
-                        for top_tracks in extract_values(data, "topTracks"):
-                            if isinstance(top_tracks, dict) and "items" in top_tracks:
-                                for item in top_tracks["items"]:
-                                    track_obj = item.get("track", {})
-                                    name = track_obj.get("name")
-                                    streams = track_obj.get("playcount")
-                                    if name and streams:
-                                        captured_tracks.append({"name": name, "streams": f"{int(streams):,}"})
-
-                        # 2. Intercept City Demographics
-                        for wpl in extract_values(data, "wherePeopleListen"):
-                            cities_list = wpl if isinstance(wpl, list) else wpl.get("cities", [])
-                            for c in cities_list:
-                                city = c.get("city")
-                                listeners = c.get("listeners")
-                                if city and listeners:
-                                    captured_cities.append({"City": city, "Listeners": f"{int(listeners):,}"})
+                    context.add_cookies(cookies)
                 except:
-                    pass # Ignore incomplete background requests
-
+                    pass
+            
         page = context.new_page()
-        
-        # Attach the listener before navigating so we don't miss the initial load
-        page.on("response", handle_response)
         
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(3000)
 
-            # Scroll down to trigger any lazy-loaded network requests
-            page.mouse.wheel(0, 2000)
-            page.wait_for_timeout(1000)
+            # --- 1. GET TOP 10 TRACKS ---
+            see_more = page.locator('button', has_text="See more").first
+            if see_more.is_visible():
+                see_more.click(force=True)
+                page.wait_for_timeout(1000)
 
-            # Do a blind click on the About section just to force the API request. 
-            # If it misses, it won't crash the script.
+            rows = page.query_selector_all('[data-testid="tracklist-row"]')
+            for row in rows[:10]:
+                lines = [l.strip() for l in row.inner_text().split('\n') if l.strip()]
+                if len(lines) >= 2:
+                    name = "Unknown"
+                    for line in lines:
+                        if not line.isdigit() and line != 'E':
+                            name = line
+                            break
+                            
+                    streams = "Unknown"
+                    for line in lines:
+                        clean_num = line.replace(',', '')
+                        if clean_num.isdigit() and len(clean_num) >= 5:
+                            streams = line
+                            break
+                            
+                    tracks.append({'name': name, 'streams': streams})
+
+            # --- 2. EXTRACT CITIES (METHOD A: RAW HTML DATA MINING) ---
+            # This instantly pulls the cities from Spotify's hidden pre-loaded data object
+            content = page.content()
             try:
-                about_section = page.locator('[data-testid="about"]')
-                if about_section.count() > 0:
-                    about_section.scroll_into_view_if_needed()
+                wpl_match = re.search(r'"wherePeopleListen"\s*:\s*\{\s*"cities"\s*:\s*(\[.*?\])\s*\}', content)
+                if wpl_match:
+                    cities_list = json.loads(wpl_match.group(1))
+                    for c in cities_list[:5]:
+                        if "city" in c and "listeners" in c:
+                            # Format listeners with commas for readability
+                            cities_data.append({"City": c["city"], "Listeners": f"{c['listeners']:,}"})
+            except Exception as e:
+                print(f"Data mining extraction failed: {e}")
+
+            # --- 3. EXTRACT CITIES (METHOD B: VIDEO UI FALLBACK) ---
+            # If the data isn't in the code, perform the exact manual clicks from your video
+            if not cities_data:
+                about_section = page.locator('section[data-testid="about"]')
+                
+                # Scroll exactly to the About card
+                for _ in range(10):
+                    if about_section.is_visible():
+                        break
+                    page.keyboard.press("PageDown")
                     page.wait_for_timeout(500)
-                    about_section.click(force=True)
-                    page.wait_for_timeout(2500) # Give the network a moment to receive the data
-            except:
-                pass
+
+                if about_section.is_visible():
+                    about_section.scroll_into_view_if_needed()
+                    page.wait_for_timeout(1000)
+
+                    # Click the image perfectly in the center
+                    box = about_section.bounding_box()
+                    if box:
+                        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
+                    else:
+                        about_section.click(force=True)
+
+                    page.wait_for_timeout(2000)
+
+                    # Wait for the popup and scroll down INSIDE the popup using Javascript
+                    dialog = page.locator('[role="dialog"]')
+                    if dialog.is_visible():
+                        dialog.evaluate("node => node.scrollBy(0, 1000)")
+                        page.wait_for_timeout(1500)
+                        
+                        body_text = dialog.inner_text()
+                        lines = [l.strip() for l in body_text.split('\n') if l.strip()]
+                        
+                        for i, line in enumerate(lines):
+                            if line.endswith("listeners") and "monthly" not in line.lower() and i > 0:
+                                city = lines[i-1]
+                                count = line.replace("listeners", "").strip()
+                                if len(cities_data) < 5 and len(city) > 2:
+                                    cities_data.append({"City": city, "Listeners": count})
+
+            if not cities_data:
+                page.screenshot(path="debug_screenshot.png")
 
         except Exception as e:
-            st.error(f"Navigation issue: {e}")
+            st.error(f"Scraper encountered an issue: {e}")
         finally:
             browser.close()
             
-    # --- CLEAN UP & DEDUPLICATE ---
-    # The interceptor catches everything, so we filter out duplicates here
-    seen_tracks = set()
-    final_tracks = []
-    for t in captured_tracks:
-        if t['name'] not in seen_tracks:
-            seen_tracks.add(t['name'])
-            final_tracks.append(t)
-            
-    seen_cities = set()
-    final_cities = []
-    for c in captured_cities:
-        if c['City'] not in seen_cities:
-            seen_cities.add(c['City'])
-            final_cities.append(c)
-            
-    return final_tracks[:10], final_cities[:5]
+    return tracks, cities_data
 
 def get_release_date(sp, artist_name, track_name):
     try:
@@ -166,7 +179,7 @@ st.title("🎧 Spotify Artist Insights")
 query = st.text_input("Enter Artist Name or URL")
 
 if st.button("Get Data"):
-    with st.spinner("Intercepting internal Spotify API data..."):
+    with st.spinner("Extracting hidden demographic data..."):
         results, cities, err = perform_search(query)
         if err:
             st.error(f"Error: {err}")
@@ -175,7 +188,6 @@ if st.button("Get Data"):
             with c1:
                 st.subheader("Top 10 Tracks")
                 if results:
-                    # FIX: Updated to Streamlit's new 2026 syntax
                     st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
                 else:
                     st.warning("Could not pull tracks.")
@@ -187,4 +199,6 @@ if st.button("Get Data"):
                         st.write(f"{c['Listeners']} listeners")
                         st.divider()
                 else:
-                    st.warning("Could not locate city data.")
+                    st.warning("Could not locate city data. Check the debug image below.")
+                    if os.path.exists("debug_screenshot.png"):
+                        st.image("debug_screenshot.png")
