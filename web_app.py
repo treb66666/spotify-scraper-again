@@ -175,7 +175,8 @@ if st.button("Get Data"):
             with c1:
                 st.subheader("Top 10 Tracks")
                 if results:
-                    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+                    # FIX: Updated to Streamlit's new 2026 syntax
+                    st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
                 else:
                     st.warning("Could not pull tracks.")
             with c2:
