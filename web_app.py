@@ -25,8 +25,9 @@ def get_spotify_streams_playwright(artist_id):
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
+        # Using a standard laptop viewport size
         context = browser.new_context(
-            viewport={'width': 1280, 'height': 1080},
+            viewport={'width': 1280, 'height': 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
@@ -45,74 +46,88 @@ def get_spotify_streams_playwright(artist_id):
         
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(4000)
 
-            # --- 1. CLICK 'SEE MORE' FOR 10 TRACKS ---
-            see_more_btn = page.locator('button', has_text="See more").first
-            if see_more_btn.count() > 0:
-                try:
-                    see_more_btn.click(force=True)
-                    page.wait_for_timeout(1500)
-                except: pass
+            # --- 1. GET 10 TRACKS ---
+            see_more = page.locator('button', has_text="See more").first
+            if see_more.is_visible():
+                see_more.click(force=True)
+                page.wait_for_timeout(1500)
 
-            # --- 2. EXTRACT TRACK NAMES AND STREAMS ---
             rows = page.query_selector_all('[data-testid="tracklist-row"]')
             for row in rows[:10]:
-                text = row.inner_text()
-                parts = [p.strip() for p in text.split('\n') if p.strip()]
-                
-                if len(parts) >= 2:
-                    # parts[0] is usually the row number (1, 2, 3...). parts[1] is the track title.
-                    name = parts[1] if parts[0].isdigit() else parts[0]
+                lines = [l.strip() for l in row.inner_text().split('\n') if l.strip()]
+                if len(lines) >= 2:
                     
+                    # Grab Title (First item that isn't a number or the 'E' explicit tag)
+                    name = "Unknown"
+                    for line in lines:
+                        if not line.isdigit() and line != 'E':
+                            name = line
+                            break
+                            
+                    # Grab Streams (First large number)
                     streams = "Unknown"
-                    for p in parts:
-                        p_clean = p.replace(',', '')
-                        # Look for the large stream number
-                        if p_clean.isdigit() and len(p_clean) >= 5:
-                            streams = p
+                    for line in lines:
+                        clean_num = line.replace(',', '')
+                        if clean_num.isdigit() and len(clean_num) >= 5:
+                            streams = line
                             break
                             
                     tracks.append({'name': name, 'streams': streams})
 
-            # --- 3. SCROLL DOWN AND OPEN ABOUT SECTION ---
-            # Move mouse to center of screen and scroll wheel to trigger lazy loading
-            page.mouse.move(640, 540)
-            for _ in range(8):
-                page.mouse.wheel(0, 800)
+            # --- 2. CAREFUL SCROLL TO ABOUT SECTION ---
+            about_section = page.locator('section[data-testid="about"]')
+            
+            # Press PageDown sequentially until the About section is visible
+            for _ in range(15):
+                if about_section.is_visible():
+                    break
+                page.keyboard.press("PageDown")
                 page.wait_for_timeout(600)
 
-            about_card = page.locator('[data-testid="about"]')
-            if about_card.count() > 0:
-                about_card.click(force=True)
-                page.wait_for_timeout(2500) # Wait for popup modal to open
+            if about_section.is_visible():
+                about_section.scroll_into_view_if_needed()
+                page.wait_for_timeout(1000)
+
+                # --- 3. CLICK THE IMAGE ---
+                box = about_section.bounding_box()
+                if box:
+                    # Click inside the top quarter of the card (where the image is)
+                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
+                else:
+                    about_section.click(force=True)
+
+                page.wait_for_timeout(3000) # Wait for popup modal to fully open
 
                 # --- 4. SCROLL INSIDE THE MODAL ---
                 dialog = page.locator('[role="dialog"]')
-                if dialog.count() > 0:
-                    dialog.hover() # Move mouse inside the popup
-                    for _ in range(4):
-                        page.mouse.wheel(0, 600)
-                        page.wait_for_timeout(500)
+                if dialog.is_visible():
+                    # Click near the top-left edge of the dialog to focus it without hitting a link
+                    dialog.click(position={"x": 10, "y": 10}) 
                     
+                    # Scroll down inside the dialog
+                    for _ in range(4):
+                        page.keyboard.press("PageDown")
+                        page.wait_for_timeout(500)
+                        
                     body_text = dialog.inner_text()
                 else:
                     body_text = page.inner_text('body')
 
                 # --- 5. EXTRACT CITIES ---
                 if "Where people listen" in body_text:
-                    block = body_text.split("Where people listen")[1]
-                    lines = [l.strip() for l in block.split('\n') if l.strip()]
-                    
-                    for i, line in enumerate(lines):
-                        if "listeners" in line.lower() and i > 0:
-                            city = lines[i-1]
-                            count = line.replace("listeners", "").strip()
-                            # Prevent grabbing random UI text as a city
-                            if len(cities_data) < 5 and len(city) > 2:
-                                cities_data.append({"City": city, "Listeners": count})
+                    parts = body_text.split("Where people listen")
+                    if len(parts) > 1:
+                        lines = [l.strip() for l in parts[1].split('\n') if l.strip()]
+                        for i, line in enumerate(lines):
+                            if "listeners" in line.lower() and i > 0:
+                                city = lines[i-1]
+                                count = line.replace("listeners", "").strip()
+                                # Prevent grabbing single-letter artifacts
+                                if len(cities_data) < 5 and len(city) > 2:
+                                    cities_data.append({"City": city, "Listeners": count})
 
-            # Take a debug screenshot if it still fails to find cities
             if not cities_data:
                 page.screenshot(path="debug_screenshot.png")
 
@@ -164,7 +179,7 @@ st.title("🎧 Spotify Artist Insights")
 query = st.text_input("Enter Artist Name or URL")
 
 if st.button("Get Data"):
-    with st.spinner("Accessing Spotify... (This takes about 15-20 seconds to fully scroll and scrape)"):
+    with st.spinner("Scraping Spotify (this takes ~15 seconds to safely scroll and parse)"):
         results, cities, err = perform_search(query)
         if err:
             st.error(f"Error: {err}")
