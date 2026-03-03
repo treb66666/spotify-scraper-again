@@ -51,7 +51,7 @@ def get_spotify_streams_playwright(artist_id):
             see_more = page.locator('button', has_text="See more").first
             if see_more.is_visible():
                 see_more.click(force=True)
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(1500)
 
             rows = page.query_selector_all('[data-testid="tracklist-row"]')
             for row in rows[:10]:
@@ -89,10 +89,10 @@ def get_spotify_streams_playwright(artist_id):
                 page.wait_for_timeout(1000)
 
                 # --- 3. CLICK THE IMAGE ---
-                # Click the dead-center of the About card to trigger the modal (avoids clicking random text)
+                # Calculate the exact box of the card and click the top-center where the image sits
                 box = about_section.bounding_box()
                 if box:
-                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
                 else:
                     about_section.click(force=True)
 
@@ -101,14 +101,14 @@ def get_spotify_streams_playwright(artist_id):
                 # --- 4. SCROLL DOWN INSIDE THE MODAL ---
                 dialog = page.locator('[role="dialog"]')
                 if dialog.is_visible():
-                    # Click slightly inside the dialog to guarantee focus, then scroll
                     dialog_box = dialog.bounding_box()
                     if dialog_box:
-                        page.mouse.click(dialog_box["x"] + 10, dialog_box["y"] + 10)
+                        # Move the mouse inside the modal to ensure scrolling targets the modal, not the background
+                        page.mouse.move(dialog_box["x"] + dialog_box["width"] / 2, dialog_box["y"] + dialog_box["height"] / 2)
                         
-                    for _ in range(5):
-                        page.keyboard.press("PageDown")
-                        page.wait_for_timeout(500)
+                        for _ in range(5):
+                            page.mouse.wheel(0, 500)
+                            page.wait_for_timeout(600)
                         
                     body_text = dialog.inner_text()
                 else:
@@ -118,7 +118,8 @@ def get_spotify_streams_playwright(artist_id):
                 lines = [l.strip() for l in body_text.split('\n') if l.strip()]
                 for i, line in enumerate(lines):
                     # We are looking for lines exactly like "2,033,580 listeners"
-                    if "listeners" in line.lower() and "monthly" not in line.lower() and i > 0:
+                    # "monthly" is excluded so we don't accidentally grab the total artist count
+                    if line.endswith("listeners") and "monthly" not in line.lower() and i > 0:
                         city = lines[i-1]
                         count = line.replace("listeners", "").strip()
                         
@@ -187,7 +188,6 @@ if st.button("Get Data"):
             with c1:
                 st.subheader("Top 10 Tracks")
                 if results:
-                    # Hides the row index numbers for a cleaner look
                     st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
                 else:
                     st.warning("Could not pull tracks.")
