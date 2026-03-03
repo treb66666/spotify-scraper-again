@@ -139,4 +139,49 @@ def perform_search(artist_input):
 
     try:
         if "artist/" in artist_input:
-            artist_id = artist_input.split("artist/")[1].
+            artist_id = artist_input.split("artist/")[1].split("?")[0]
+        else:
+            search = sp.search(q=artist_input, type='artist', limit=1)
+            artist_id = search['artists']['items'][0]['id']
+        
+        artist_name = sp.artist(artist_id)['name']
+        
+        tracks_raw, cities = get_spotify_streams_playwright(artist_id)
+        
+        final_results = []
+        for t in tracks_raw:
+            date = get_release_date(sp, artist_name, t['name'])
+            final_results.append({"Track Name": t['name'], "Release Date": date, "Total Streams": t['streams']})
+            
+        return final_results, cities, None
+    except Exception as e:
+        return None, None, str(e)
+
+# --- SIMPLE UI ---
+st.set_page_config(page_title="Spotify Pro Scraper", layout="wide")
+st.title("🎧 Spotify Artist Insights")
+
+query = st.text_input("Enter Artist Name or URL")
+
+if st.button("Get Data"):
+    with st.spinner("Accessing Spotify... (This takes about 15-20 seconds to fully scroll and scrape)"):
+        results, cities, err = perform_search(query)
+        if err:
+            st.error(f"Error: {err}")
+        else:
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                st.subheader("Top Tracks")
+                if results:
+                    st.dataframe(pd.DataFrame(results), use_container_width=True)
+                else:
+                    st.warning("Could not pull tracks.")
+            with c2:
+                st.subheader("Top 5 Cities")
+                if cities:
+                    for c in cities:
+                        st.write(f"**{c['City']}**: {c['Listeners']} listeners")
+                else:
+                    st.warning("Could not locate city data. Check the debug image below.")
+                    if os.path.exists("debug_screenshot.png"):
+                        st.image("debug_screenshot.png")
