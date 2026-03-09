@@ -7,41 +7,39 @@ import os
 import json
 import subprocess
 
-# --- INITIALIZATION ---
+# --- CACHE PLAYWRIGHT INSTALLATION ---
 @st.cache_resource
 def install_playwright():
-    """Ensures environment has browser binaries."""
-    with st.spinner("Preparing headless browser..."):
+    with st.spinner("Initializing headless browser backend..."):
         subprocess.run(["playwright", "install", "chromium"])
 
 install_playwright()
 
 def get_spotify_insights(artist_id):
-    """
-    Leverages Network Interception and DOM interaction to pull
-    top tracks and hidden city listener data.
-    """
+    # CRITICAL FIX: Explicitly using the real Spotify URL
     url = f"https://open.spotify.com/artist/{artist_id}"
     tracks = []
     cities_data = []
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = p.chromium.launch(
+            headless=True, 
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+        )
         context = browser.new_context(
-            viewport={'width': 1280, 'height': 1200},
+            viewport={'width': 1920, 'height': 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
-        # Robust Cookie Integration
+        # LOAD AND CLEAN COOKIES
         if os.path.exists("cookies.json"):
             try:
                 with open("cookies.json", "r", encoding="utf-8") as f:
                     cookies = json.load(f, strict=False)
-                    # Normalize cookie fields for Playwright
                     for cookie in cookies:
-                        if "domain" in cookie:
-                            cookie["domain"] = ".spotify.com"
-                        if cookie.get("sameSite") in ["no_restriction", None]:
+                        # CRITICAL FIX: Force the domain to the real Spotify domain
+                        cookie["domain"] = ".spotify.com"
+                        if cookie.get("sameSite") in ["no_restriction", None, "unspecified", "None"]:
                             cookie["sameSite"] = "None"
                     context.add_cookies(cookies)
             except Exception as e:
@@ -62,7 +60,7 @@ def get_spotify_insights(artist_id):
                                 "City": item['city'], 
                                 "Listeners": f"{item['numberOfListeners']:,}"
                             })
-                except:
+                except Exception:
                     pass
 
         page.on("response", capture_api_data)
@@ -71,13 +69,13 @@ def get_spotify_insights(artist_id):
             page.goto(url, wait_until="networkidle", timeout=60000)
             
             # --- SCRAPE TOP TRACKS ---
-            # Try to expand list if 'See more' exists
             try:
                 see_more = page.locator('button:has-text("See more")').first
-                if see_more.is_visible():
+                if see_more.is_visible(timeout=2000):
                     see_more.click(force=True)
                     page.wait_for_timeout(1000)
-            except: pass
+            except Exception:
+                pass
 
             rows = page.query_selector_all('[data-testid="tracklist-row"]')
             for row in rows[:10]:
@@ -88,50 +86,59 @@ def get_spotify_insights(artist_id):
                     tracks.append({'name': name, 'streams': streams})
 
             # --- TRIGGER ABOUT DATA ---
-            # Click the About section to fire the background API call
+            # Scroll slowly down to ensure lazy-loaded elements render
+            page.mouse.wheel(0, 1000)
+            page.wait_for_timeout(1000)
+            page.mouse.wheel(0, 1000)
+
+            # Look for the About card
             about_trigger = page.locator('[data-testid="artist-about-card"], section[data-testid="about"]').first
-            if about_trigger.is_visible():
+            if about_trigger.is_visible(timeout=5000):
                 about_trigger.scroll_into_view_if_needed()
                 page.wait_for_timeout(1000)
                 about_trigger.click(force=True)
-                page.wait_for_timeout(3000) # Buffer for interceptor
+                page.wait_for_timeout(4000) # Wait for GraphQL response
+            
+            # Debug mechanism: If no cities, capture the screen to see what went wrong
+            if not cities_data:
+                page.screenshot(path="debug_screenshot.png")
+            elif os.path.exists("debug_screenshot.png"):
+                # Clean up old screenshots if successful
+                os.remove("debug_screenshot.png")
 
         except Exception as e:
-            st.error(f"Interception failed: {e}")
+            st.error(f"Playwright Execution Error: {e}")
         finally:
             browser.close()
 
     return tracks, cities_data
 
 def perform_analysis(artist_query):
-    """Bridge between Spotify API and Scraper."""
-    # Your project credentials
     sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
         client_id="1d7660677d5b4567b86bfa2d730eacd7",
         client_secret="37a4d9cd968e43ad851074944d2df8e7"
     ))
 
     try:
-        # Resolve Artist ID
         if "artist/" in artist_query:
             artist_id = artist_query.split("artist/")[1].split("?")[0]
         else:
             search_res = sp.search(q=artist_query, type='artist', limit=1)
+            if not search_res['artists']['items']:
+                return None, None, "Artist not found."
             artist_id = search_res['artists']['items'][0]['id']
         
         artist_obj = sp.artist(artist_id)
         
-        # Run the Playwright Engine
         tracks_raw, cities = get_spotify_insights(artist_id)
         
-        # Build Final Results
         enriched_tracks = []
         for t in tracks_raw:
-            # Quick lookup for release dates via API
             try:
                 search = sp.search(q=f"artist:{artist_obj['name']} track:{t['name']}", type='track', limit=1)
                 date = search['tracks']['items'][0]['album']['release_date'] if search['tracks']['items'] else "Unknown"
-            except: date = "Unknown"
+            except Exception:
+                date = "Unknown"
             
             enriched_tracks.append({
                 "Track Name": t['name'], 
@@ -143,35 +150,38 @@ def perform_analysis(artist_query):
     except Exception as e:
         return None, None, str(e)
 
-# --- UI ---
-st.set_page_config(page_title="Insight Scraper Pro", layout="wide")
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Spotify Artist Insights", layout="wide")
 st.title("🎧 Spotify Artist Insights")
-st.markdown("---")
+st.markdown("Extracting real-time streaming and demographic data via network interception.")
 
-user_input = st.text_input("Artist Name or URL", placeholder="e.g. Talwiinder")
+user_input = st.text_input("Enter Artist Name or Spotify URL", placeholder="e.g. Drake")
 
 if st.button("Generate Report"):
     if user_input:
-        with st.spinner("Processing network traffic..."):
+        with st.spinner("Intercepting Spotify API traffic..."):
             data, locations, error = perform_analysis(user_input)
             
             if error:
-                st.error(f"Pipeline Error: {error}")
+                st.error(f"Error: {error}")
             else:
-                c1, c2 = st.columns([2, 1])
-                with c1:
-                    st.subheader("📊 Performance Data")
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.subheader("📊 Top 10 Tracks")
                     if data:
                         st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
-                    else: st.info("No track data retrieved.")
+                    else: 
+                        st.warning("No track data retrieved.")
                 
-                with c2:
-                    st.subheader("🌍 Demographic Reach")
+                with col2:
+                    st.subheader("🌍 Demographic Reach (Top 5 Cities)")
                     if locations:
                         for loc in locations:
                             st.metric(loc['City'], f"{loc['Listeners']} listeners")
                             st.divider()
                     else:
-                        st.warning("City data unavailable. Ensure your cookies are fresh.")
+                        st.warning("City data unavailable. Checking debug info...")
+                        if os.path.exists("debug_screenshot.png"):
+                            st.image("debug_screenshot.png", caption="What the scraper saw (Check if logged out or blocked)")
     else:
-        st.warning("Please enter a query.")
+        st.warning("Please enter an artist name or link.")
