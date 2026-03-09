@@ -17,7 +17,7 @@ def install_playwright():
 install_playwright()
 
 def get_spotify_insights(artist_id):
-    # Using the exact open.spotify.com domain
+    # Using the exact Spotify domain
     url = f"https://open.spotify.com/artist/{artist_id}"
     tracks = []
     cities_data = []
@@ -63,8 +63,8 @@ def get_spotify_insights(artist_id):
                         if top_cities and not cities_data:
                             for item in top_cities[:5]:
                                 cities_data.append({
-                                    "City": item.get('city', 'Unknown'), 
-                                    "Listeners": f"{item.get('numberOfListeners', 0):,}"
+                                    "Location": item.get('city', 'Unknown'), 
+                                    "Listeners": f"{item.get('numberOfListeners', 0):,} listeners"
                                 })
                 except Exception:
                     pass
@@ -117,7 +117,7 @@ def get_spotify_insights(artist_id):
                             city = lines[i-1]
                             count = line.replace("listeners", "").replace(",", "").strip()
                             if count.isdigit() and len(cities_data) < 5:
-                                cities_data.append({"City": city, "Listeners": f"{int(count):,}"})
+                                cities_data.append({"Location": city, "Listeners": f"{int(count):,} listeners"})
 
             if not cities_data:
                 page.screenshot(path="debug_screenshot.png")
@@ -194,9 +194,9 @@ if st.button("Generate Report"):
                 with col2:
                     st.subheader("🌍 Demographic Reach (Top 5 Cities)")
                     if locations:
-                        for loc in locations:
-                            st.metric(loc['City'], f"{loc['Listeners']} listeners")
-                            st.divider()
+                        # Render cities as a clean, copyable table
+                        cities_df = pd.DataFrame(locations)
+                        st.dataframe(cities_df, use_container_width=True, hide_index=True)
                     else:
                         st.warning("City data unavailable. Checking debug info...")
                         if os.path.exists("debug_screenshot.png"):
