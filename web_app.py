@@ -10,13 +10,14 @@ import subprocess
 # --- CACHE PLAYWRIGHT INSTALLATION ---
 @st.cache_resource
 def install_playwright():
+    """Ensures environment has browser binaries."""
     with st.spinner("Initializing headless browser backend..."):
         subprocess.run(["playwright", "install", "chromium"])
 
 install_playwright()
 
 def get_spotify_insights(artist_id):
-    # CRITICAL FIX: Explicitly using the real Spotify URL
+    # Using the exact open.spotify.com domain
     url = f"https://open.spotify.com/artist/{artist_id}"
     tracks = []
     cities_data = []
@@ -37,8 +38,9 @@ def get_spotify_insights(artist_id):
                 with open("cookies.json", "r", encoding="utf-8") as f:
                     cookies = json.load(f, strict=False)
                     for cookie in cookies:
-                        # CRITICAL FIX: Force the domain to the real Spotify domain
-                        cookie["domain"] = ".spotify.com"
+                        # Clean domains to strictly match Spotify
+                        if "spotify" in cookie.get("domain", ""):
+                            cookie["domain"] = ".spotify.com"
                         if cookie.get("sameSite") in ["no_restriction", None, "unspecified", "None"]:
                             cookie["sameSite"] = "None"
                     context.add_cookies(cookies)
@@ -47,19 +49,23 @@ def get_spotify_insights(artist_id):
 
         page = context.new_page()
 
-        # --- INTERCEPTOR LOGIC ---
+        # --- ADVANCED INTERCEPTOR LOGIC ---
         def capture_api_data(response):
             nonlocal cities_data
-            if "queryArtistAbout" in response.url or "queryWherePeopleListen" in response.url:
+            # Broaden interceptor to catch any potential GraphQL or JSON payload
+            if "json" in response.headers.get("content-type", "") or "graphql" in response.url.lower() or "query" in response.url.lower():
                 try:
                     payload = response.json()
-                    top_cities = payload['data']['artistUnion']['stats']['topCities']['items']
-                    if top_cities and not cities_data:
-                        for item in top_cities[:5]:
-                            cities_data.append({
-                                "City": item['city'], 
-                                "Listeners": f"{item['numberOfListeners']:,}"
-                            })
+                    # Safely walk down the tree to bypass dynamic URL naming
+                    if isinstance(payload, dict) and 'data' in payload:
+                        top_cities = payload.get('data', {}).get('artistUnion', {}).get('stats', {}).get('topCities', {}).get('items', [])
+                        
+                        if top_cities and not cities_data:
+                            for item in top_cities[:5]:
+                                cities_data.append({
+                                    "City": item.get('city', 'Unknown'), 
+                                    "Listeners": f"{item.get('numberOfListeners', 0):,}"
+                                })
                 except Exception:
                     pass
 
@@ -86,24 +92,36 @@ def get_spotify_insights(artist_id):
                     tracks.append({'name': name, 'streams': streams})
 
             # --- TRIGGER ABOUT DATA ---
-            # Scroll slowly down to ensure lazy-loaded elements render
             page.mouse.wheel(0, 1000)
             page.wait_for_timeout(1000)
-            page.mouse.wheel(0, 1000)
 
-            # Look for the About card
             about_trigger = page.locator('[data-testid="artist-about-card"], section[data-testid="about"]').first
             if about_trigger.is_visible(timeout=5000):
                 about_trigger.scroll_into_view_if_needed()
                 page.wait_for_timeout(1000)
                 about_trigger.click(force=True)
-                page.wait_for_timeout(4000) # Wait for GraphQL response
-            
-            # Debug mechanism: If no cities, capture the screen to see what went wrong
+                page.wait_for_timeout(2000) 
+                
+                # --- SCROLL INSIDE THE MODAL ---
+                dialog = page.locator('[role="dialog"]')
+                if dialog.is_visible():
+                    # Force aggressive JS scroll to the bottom of the modal specifically
+                    dialog.evaluate("node => node.scrollTo(0, node.scrollHeight)")
+                    page.wait_for_timeout(3000) # Buffer for interceptor
+
+                # --- DOM SCRAPING FALLBACK ---
+                if not cities_data and dialog.is_visible():
+                    lines = [l.strip() for l in dialog.inner_text().split('\n') if l.strip()]
+                    for i, line in enumerate(lines):
+                        if "listeners" in line.lower() and "monthly" not in line.lower() and i > 0:
+                            city = lines[i-1]
+                            count = line.replace("listeners", "").replace(",", "").strip()
+                            if count.isdigit() and len(cities_data) < 5:
+                                cities_data.append({"City": city, "Listeners": f"{int(count):,}"})
+
             if not cities_data:
                 page.screenshot(path="debug_screenshot.png")
             elif os.path.exists("debug_screenshot.png"):
-                # Clean up old screenshots if successful
                 os.remove("debug_screenshot.png")
 
         except Exception as e:
