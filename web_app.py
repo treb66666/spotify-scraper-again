@@ -5,30 +5,30 @@ from playwright.sync_api import sync_playwright
 import pandas as pd
 import os
 import json
-import re
 import subprocess
 
 # --- CACHE PLAYWRIGHT INSTALLATION ---
 @st.cache_resource
 def install_playwright():
+    """Ensures playwright and chromium are installed on the environment."""
     with st.spinner("Initializing headless browser backend..."):
-        # Ensures the browser binaries are present on the host (Streamlit Cloud or Local)
         subprocess.run(["playwright", "install", "chromium"])
 
 install_playwright()
 
-def get_spotify_data_via_interception(artist_id):
+def get_spotify_data_pro(artist_id):
     """
-    Uses Network Interception to catch the internal GraphQL/API calls 
-    containing track and city listener data.
+    Main scraping engine using Network Interception to capture 
+    hidden demographic and track data.
     """
     url = f"https://open.spotify.com/artist/{artist_id}"
     tracks = []
     cities_data = []
     
     with sync_playwright() as p:
+        # Launching with no-sandbox for compatibility with cloud environments
         browser = p.chromium.launch(
-            headless=True,
+            headless=True, 
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         context = browser.new_context(
@@ -36,30 +36,29 @@ def get_spotify_data_via_interception(artist_id):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
-        # Apply cookies if available
+        # Handle Cookies for Authentication
         if os.path.exists("cookies.json"):
             with open("cookies.json", "r") as f:
                 cookies = json.load(f)
-                # Quick fix for the domain format in your specific cookies.json
                 for cookie in cookies:
+                    # Clean up domain formatting for Playwright
                     if "spotify.com" in cookie.get("domain", ""):
                         cookie["domain"] = ".spotify.com"
                 try:
                     context.add_cookies(cookies)
-                except:
+                except Exception:
                     pass
             
         page = context.new_page()
 
-        # --- NETWORK INTERCEPTION LOGIC ---
+        # --- THE INTERCEPTOR ---
+        # This catches the background API call containing the city data
         def handle_response(response):
             nonlocal cities_data
-            # Spotify often uses GraphQL endpoints for "About" data
             if "queryArtistAbout" in response.url or "queryWherePeopleListen" in response.url:
                 try:
                     data = response.json()
-                    # Drill down to the top cities list
-                    # Path: data -> artistUnion -> stats -> topCities -> items
+                    # Drill into Spotify's internal GraphQL structure
                     items = data['data']['artistUnion']['stats']['topCities']['items']
                     if items and not cities_data:
                         for item in items[:5]:
@@ -70,62 +69,71 @@ def get_spotify_data_via_interception(artist_id):
                 except Exception:
                     pass
 
-        # Attach the listener
         page.on("response", handle_response)
         
         try:
-            # 1. Load the page
+            # Load the page and wait for the initial network to settle
             page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # 2. Trigger the Top 10 tracks (DOM Scraping)
+            # --- 1. EXTRACT TRACKS (DOM SCRAPING) ---
+            # Attempt to click 'See more' if available to get full top 10
             see_more = page.locator('button', has_text="See more").first
             if see_more.is_visible():
-                see_more.click()
+                see_more.click(force=True)
                 page.wait_for_timeout(1000)
 
             rows = page.query_selector_all('[data-testid="tracklist-row"]')
             for row in rows[:10]:
                 lines = [l.strip() for l in row.inner_text().split('\n') if l.strip()]
                 if len(lines) >= 2:
+                    # Logic to identify track name vs stream count
                     name = next((l for l in lines if not l.isdigit() and l != 'E'), "Unknown")
                     streams = next((l for l in lines if l.replace(',', '').isdigit() and len(l.replace(',', '')) >= 5), "Unknown")
                     tracks.append({'name': name, 'streams': streams})
 
-            # 3. Trigger the "About" data (API Interception)
-            # We scroll to the bottom to force Spotify to lazy-load the "About" stats
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(3000) # Wait for the network listener to catch the JSON
-
-            # Fallback: If interception didn't catch it, try one manual click on the "About" card
+            # --- 2. TRIGGER CITY DATA (UI INTERACTION) ---
+            # We scroll to and click the 'About' section to force the API call
+            about_card = page.locator('section[data-testid="about"], [data-testid="artist-about-card"]').first
+            if about_card.is_visible():
+                about_card.scroll_into_view_if_needed()
+                page.wait_for_timeout(1000)
+                # Clicking the card is the "Golden Trigger" for the city data packet
+                about_card.click(force=True)
+                # Brief pause to allow the interceptor to catch the packet
+                page.wait_for_timeout(3000) 
+            
+            # Fallback scroll if click didn't fire
             if not cities_data:
-                about_card = page.locator('section[data-testid="about"]')
-                if about_card.is_visible():
-                    about_card.click()
-                    page.wait_for_timeout(2000)
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(2000)
 
         except Exception as e:
-            st.error(f"Scraper encountered an issue: {e}")
+            st.error(f"Extraction error: {e}")
         finally:
             browser.close()
             
     return tracks, cities_data
 
 def get_release_date(sp, artist_name, track_name):
+    """Fetches release date via official Spotipy API."""
     try:
         res = sp.search(q=f"artist:{artist_name} track:{track_name}", type='track', limit=1)
         if res['tracks']['items']:
             return res['tracks']['items'][0]['album']['release_date']
-    except: pass
+    except Exception:
+        pass
     return "Unknown"
 
 def perform_search(artist_input):
-    # Your existing credentials
+    """Coordinates Spotipy and Playwright scraping."""
+    # Using your existing project credentials
     sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
         client_id="1d7660677d5b4567b86bfa2d730eacd7",
         client_secret="37a4d9cd968e43ad851074944d2df8e7"
     ))
 
     try:
+        # Resolve Artist ID
         if "artist/" in artist_input:
             artist_id = artist_input.split("artist/")[1].split("?")[0]
         else:
@@ -134,24 +142,29 @@ def perform_search(artist_input):
         
         artist_name = sp.artist(artist_id)['name']
         
-        # Call the new interception function
-        tracks_raw, cities = get_spotify_data_via_interception(artist_id)
+        # Execute Scraper
+        tracks_raw, cities = get_spotify_data_pro(artist_id)
         
+        # Merge Scraped Data with API Data
         final_results = []
         for t in tracks_raw:
             date = get_release_date(sp, artist_name, t['name'])
-            final_results.append({"Track Name": t['name'], "Release Date": date, "Total Streams": t['streams']})
+            final_results.append({
+                "Track Name": t['name'], 
+                "Release Date": date, 
+                "Total Streams": t['streams']
+            })
             
         return final_results, cities, None
     except Exception as e:
         return None, None, str(e)
 
-# --- UI SETUP ---
-st.set_page_config(page_title="Spotify Pro Scraper", layout="wide")
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Spotify Insight Pro", layout="wide")
 st.title("🎧 Spotify Artist Insights")
-st.markdown("Extracting real-time streaming and demographic data via network interception.")
+st.caption("Professional-grade data extraction via network interception.")
 
-query = st.text_input("Enter Artist Name or Spotify URL", placeholder="e.g. Talwiinder or https://open.spotify.com/artist/...")
+query = st.text_input("Enter Artist Name or Spotify URL", placeholder="e.g. Drake or https://open.spotify.com/artist/...")
 
 if st.button("Analyze Artist"):
     if query:
@@ -166,7 +179,8 @@ if st.button("Analyze Artist"):
                     if results:
                         st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
                     else:
-                        st.warning("No track data found.")
+                        st.warning("Could not retrieve track data.")
+                
                 with col2:
                     st.subheader("📍 Top 5 Cities")
                     if cities:
@@ -174,6 +188,6 @@ if st.button("Analyze Artist"):
                             st.metric(label=c['City'], value=f"{c['Listeners']} listeners")
                             st.divider()
                     else:
-                        st.info("City data didn't load. Try again or check if the artist has a public 'About' section.")
+                        st.info("City data not found. This artist may not have enough monthly listeners to display city data, or the 'About' section failed to load.")
     else:
-        st.warning("Please enter an artist name.")
+        st.warning("Please provide an artist name or link.")
