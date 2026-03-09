@@ -139,6 +139,7 @@ def get_spotify_insights(artist_id):
     return tracks, cities_data
 
 def perform_analysis(artist_query):
+    # Spotipy authentication with keys hardcoded as requested
     sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
         client_id="1d7660677d5b4567b86bfa2d730eacd7",
         client_secret="37a4d9cd968e43ad851074944d2df8e7"
@@ -165,10 +166,11 @@ def perform_analysis(artist_query):
             except Exception:
                 date = "Unknown"
             
+            # Swapped the order of Total Streams and Release Date here
             enriched_tracks.append({
                 "Track Name": t['name'], 
-                "Release Date": date, 
-                "Total Streams": t['streams']
+                "Total Streams": t['streams'],
+                "Release Date": date
             })
             
         return enriched_tracks, cities, None
