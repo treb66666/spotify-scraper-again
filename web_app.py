@@ -62,8 +62,14 @@ def get_spotify_insights(artist_id):
                         
                         if top_cities and not cities_data:
                             for item in top_cities[:5]:
+                                city = item.get('city', 'Unknown')
+                                country = item.get('country', '')
+                                
+                                # Format as "City, CountryCode" (e.g., "London, GB")
+                                location_name = f"{city}, {country}" if country else city
+                                
                                 cities_data.append({
-                                    "Location": item.get('city', 'Unknown'), 
+                                    "Location": location_name, 
                                     "Listeners": f"{item.get('numberOfListeners', 0):,} listeners"
                                 })
                 except Exception:
@@ -114,6 +120,7 @@ def get_spotify_insights(artist_id):
                     lines = [l.strip() for l in dialog.inner_text().split('\n') if l.strip()]
                     for i, line in enumerate(lines):
                         if "listeners" in line.lower() and "monthly" not in line.lower() and i > 0:
+                            # The DOM text will already natively have the "City, Code" format
                             city = lines[i-1]
                             count = line.replace("listeners", "").replace(",", "").strip()
                             if count.isdigit() and len(cities_data) < 5:
@@ -194,7 +201,7 @@ if st.button("Generate Report"):
                 with col2:
                     st.subheader("🌍 Demographic Reach (Top 5 Cities)")
                     if locations:
-                        # Render cities as a clean, copyable table
+                        # Renders directly as a clean, copyable table
                         cities_df = pd.DataFrame(locations)
                         st.dataframe(cities_df, use_container_width=True, hide_index=True)
                     else:
