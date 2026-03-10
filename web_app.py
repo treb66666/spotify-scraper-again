@@ -53,11 +53,14 @@ async def get_spotify_streams_playwright(artist_id):
                     # Default set to <1000 instead of Unknown
                     streams_str = "<1000"
                     track_name = "Unknown"
-                    for p in reversed(parts):
+                    
+                    # FIX: parts[1:] skips the first item (the rank number) so we don't grab it by mistake
+                    for p in reversed(parts[1:]):
                         if ':' in p and len(p) <= 5: continue
                         if sum(c.isdigit() for c in p) >= 1 and not any(c.isalpha() for c in p):
                             streams_str = p
                             break
+                            
                     for p in parts:
                         if any(c.isalpha() for c in p) and p != 'E':
                             track_name = p
