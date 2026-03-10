@@ -166,11 +166,10 @@ def perform_analysis(artist_query):
             except Exception:
                 date = "Unknown"
             
-            # Swapped the order of Total Streams and Release Date here
             enriched_tracks.append({
                 "Track Name": t['name'], 
-                "Release Date": date,
-                "Total Streams": t['streams']
+                "Total Streams": t['streams'],
+                "Release Date": date
             })
             
         return enriched_tracks, cities, None
@@ -196,7 +195,11 @@ if st.button("Generate Report"):
                 with col1:
                     st.subheader("📊 Top 10 Tracks")
                     if data:
-                        st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+                        # Convert to DataFrame and STRICTLY enforce the column order
+                        df = pd.DataFrame(data)
+                        df = df[["Track Name", "Total Streams", "Release Date"]]
+                        
+                        st.dataframe(df, use_container_width=True, hide_index=True)
                     else: 
                         st.warning("No track data retrieved.")
                 
