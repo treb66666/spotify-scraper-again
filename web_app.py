@@ -170,25 +170,17 @@ if st.button("Generate Report", type="primary"):
                             {"Location": "Norwich, GB", "Listeners": "38 listeners"}
                         ]
                         
-                        df_demo = pd.DataFrame(demographics_results)
+                        # Use custom HTML to match the Spotify UI exactly
+                        html_content = ""
+                        for item in demographics_results:
+                            html_content += f"""
+                            <div style='margin-bottom: 16px; line-height: 1.4;'>
+                                <strong style='font-size: 16px; color: #ffffff;'>{item['Location']}</strong><br>
+                                <span style='color: #a7a7a7; font-size: 14px;'>{item['Listeners']}</span>
+                            </div>
+                            """
                         
-                        # Combine Location and Listeners into a single column with a line break
-                        df_demo["Location Data"] = df_demo["Location"] + "\n" + df_demo["Listeners"].astype(str)
-                        
-                        # Drop the old columns and keep only the unified one
-                        df_demo = df_demo[["Location Data"]]
-                        
-                        # Configure dataframe to show the multiline text properly
-                        st.dataframe(
-                            df_demo, 
-                            use_container_width=True, 
-                            hide_index=True,
-                            column_config={
-                                "Location Data": st.column_config.TextColumn(
-                                    "Location & Listeners", 
-                                    width="large"
-                                )
-                            }
-                        )
+                        # Render the custom block in the app
+                        st.markdown(html_content, unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
