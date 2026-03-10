@@ -169,8 +169,8 @@ def perform_analysis(artist_query):
             # Swapped the order of Total Streams and Release Date here
             enriched_tracks.append({
                 "Track Name": t['name'], 
-                "Total Streams": t['streams'],
-                "Release Date": date
+                "Release Date": date,
+                "Total Streams": t['streams']
             })
             
         return enriched_tracks, cities, None
