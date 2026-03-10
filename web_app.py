@@ -94,8 +94,23 @@ def get_spotify_insights(artist_id):
                 text_content = [t.strip() for t in row.inner_text().split('\n') if t.strip()]
                 if len(text_content) >= 2:
                     name = next((t for t in text_content if not t.isdigit() and t != 'E'), "Unknown")
-                    streams = next((t for t in text_content if t.replace(',', '').isdigit() and len(t.replace(',', '')) >= 5), "Unknown")
-                    tracks.append({'name': name, 'streams': streams})
+                    
+                    # --- FIXED STREAM EXTRACTION LOGIC ---
+                    # Find all purely numeric strings (ignoring commas) in the row
+                    nums = [t for t in text_content if t.replace(',', '').isdigit()]
+                    streams_val = "<1000"
+                    
+                    if len(nums) > 1:
+                        # The last number is typically the stream count (first is track index)
+                        val = int(nums[-1].replace(',', ''))
+                        streams_val = "<1000" if val < 1000 else f"{val:,}"
+                    elif len(nums) == 1:
+                        # Fallback if only one number is found
+                        val = int(nums[0].replace(',', ''))
+                        if val > 10: # Ensures it's not just the 1-10 track index
+                            streams_val = "<1000" if val < 1000 else f"{val:,}"
+                    
+                    tracks.append({'name': name, 'streams': streams_val})
 
             # --- TRIGGER ABOUT DATA ---
             page.mouse.wheel(0, 1000)
