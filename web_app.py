@@ -1,5 +1,6 @@
 import streamlit as st
 import asyncio
+from datetime import datetime
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from playwright.async_api import async_playwright
@@ -21,8 +22,7 @@ async def get_spotify_streams_playwright(artist_id):
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        # FORCE LARGE VIEWPORT so Spotify doesn't hide the Streams column
-        context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
+        context = await browser.new_context()
         page = await context.new_page()
         
         try:
@@ -50,17 +50,13 @@ async def get_spotify_streams_playwright(artist_id):
                 parts = [p.strip() for p in text.split('\n') if p.strip()]
                 
                 if len(parts) >= 2:
-                    # Default set to <1000 instead of Unknown
-                    streams_str = "<1000"
+                    streams_str = "Unknown"
                     track_name = "Unknown"
-                    
-                    # FIX: parts[1:] skips the first item (the rank number) so we don't grab it by mistake
-                    for p in reversed(parts[1:]):
+                    for p in reversed(parts):
                         if ':' in p and len(p) <= 5: continue
                         if sum(c.isdigit() for c in p) >= 1 and not any(c.isalpha() for c in p):
                             streams_str = p
                             break
-                            
                     for p in parts:
                         if any(c.isalpha() for c in p) and p != 'E':
                             track_name = p
@@ -91,9 +87,13 @@ def get_release_date_from_spotify(sp, artist_name, track_name):
         return "Unknown"
 
 async def perform_search(artist_input):
-    # Securely load credentials from Streamlit Secrets
-    CLIENT_ID = st.secrets["SPOTIPY_CLIENT_ID"]
-    CLIENT_SECRET = st.secrets["SPOTIPY_CLIENT_SECRET"]
+    # Try to use secure secrets, but fall back to hardcoded keys if they aren't set up yet.
+    try:
+        CLIENT_ID = st.secrets["SPOTIPY_CLIENT_ID"]
+        CLIENT_SECRET = st.secrets["SPOTIPY_CLIENT_SECRET"]
+    except (KeyError, FileNotFoundError):
+        CLIENT_ID = "1d7660677d5b4567b86bfa2d730eacd7"
+        CLIENT_SECRET = "37a4d9cd968e43ad851074944d2df8e7"
     
     auth_manager = SpotifyClientCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
     sp = spotipy.Spotify(auth_manager=auth_manager)
@@ -118,68 +118,39 @@ async def perform_search(artist_input):
     final_results = []
     for idx, track_info in enumerate(top_tracks_data, start=1):
         track_name = track_info['name']
+        
         rel_date = get_release_date_from_spotify(sp, artist_name, track_name)
         
         final_results.append({
+            "Rank": idx,
             "Track Name": track_name,
-            "Total Streams": track_info['streams'],
-            "Release Date": rel_date
+            "Release Date": rel_date,
+            "Total Streams": track_info['streams']
         })
 
     return final_results, None
 
 # --- STREAMLIT WEB UI ---
-st.set_page_config(page_title="Spotify Artist Insights", layout="wide")
+st.set_page_config(page_title="Spotify Stream Scraper", layout="centered")
 
-st.title("🎧 Spotify Artist Insights")
-st.write("Extracting real-time streaming and demographic data via network interception.")
+st.title("🎧 Spotify Stream Scraper")
+st.write("Enter an artist's name or paste their Spotify link below to fetch their top tracks.")
 
-artist_input = st.text_input("Enter Artist Name or Spotify URL")
+artist_input = st.text_input("Artist Name or Link:")
 
-if st.button("Generate Report", type="primary"):
+if st.button("Fetch Tracks", type="primary"):
     if not artist_input:
         st.warning("Please provide an Artist Name or Spotify Link.")
     else:
-        with st.spinner("Fetching data..."):
+        with st.spinner(f"Fetching data for {artist_input}... this takes about 10 seconds."):
             try:
-                # Run the track scraper
                 results, error_msg = asyncio.run(perform_search(artist_input))
                 
                 if error_msg:
                     st.error(error_msg)
                 elif results:
-                    # Create the two columns for the dashboard
-                    col1, col2 = st.columns([1.5, 1])
-                    
-                    with col1:
-                        st.subheader("📊 Top 10 Tracks")
-                        df_tracks = pd.DataFrame(results)
-                        st.dataframe(df_tracks, use_container_width=True, hide_index=True)
-                    
-                    with col2:
-                        st.subheader("🌍 Demographic Reach (Top 5 Cities)")
-                        
-                        # --- PLUG IN YOUR DEMOGRAPHICS SCRAPER LOGIC HERE ---
-                        # Replace 'demographics_results' with your actual variable
-                        demographics_results = [
-                            {"Location": "London, GB", "Listeners": "166 listeners"},
-                            {"Location": "Melbourne, AU", "Listeners": "49 listeners"},
-                            {"Location": "Sydney, AU", "Listeners": "43 listeners"},
-                            {"Location": "Istanbul, TR", "Listeners": "42 listeners"},
-                            {"Location": "Norwich, GB", "Listeners": "38 listeners"}
-                        ]
-                        
-                        # Use custom HTML to match the Spotify UI exactly
-                        html_content = ""
-                        for item in demographics_results:
-                            html_content += f"""
-                            <div style='margin-bottom: 16px; line-height: 1.4;'>
-                                <strong style='font-size: 16px; color: #ffffff;'>{item['Location']}</strong><br>
-                                <span style='color: #a7a7a7; font-size: 14px;'>{item['Listeners']}</span>
-                            </div>
-                            """
-                        
-                        # Render the custom block in the app
-                        st.markdown(html_content, unsafe_allow_html=True)
+                    st.success("Successfully fetched tracks!")
+                    df = pd.DataFrame(results)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
