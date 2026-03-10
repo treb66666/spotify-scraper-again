@@ -75,17 +75,30 @@ async def get_spotify_streams_playwright(artist_id):
     return tracks
 
 def get_release_date_from_spotify(sp, artist_name, track_name):
-    """Uses the official Spotify API to find the exact release date."""
+    """Uses the official Spotify API to find the exact release date with strict filtering."""
     clean_track_name = track_name.split('(')[0].split('-')[0].strip()
-    query = f"{artist_name} {clean_track_name}"
+    
+    # FIX: Use strict Spotify search filters to prevent fuzzy matching the wrong song
+    query = f"track:{clean_track_name} artist:{artist_name}"
     
     try:
         result = sp.search(q=query, type='track', limit=1)
         tracks = result.get('tracks', {}).get('items', [])
         
         if tracks:
-            release_date = tracks[0]['album']['release_date']
-            return release_date
+            return tracks[0]['album']['release_date']
+            
+        # If strict search fails (e.g., featured artist), fall back to generic search but VERIFY the artist
+        fallback_query = f"{artist_name} {clean_track_name}"
+        fallback_result = sp.search(q=fallback_query, type='track', limit=5)
+        fallback_tracks = fallback_result.get('tracks', {}).get('items', [])
+        
+        for track in fallback_tracks:
+            # Check every artist on the track to make sure we have the right one
+            for artist in track['artists']:
+                if artist_name.lower() in artist['name'].lower():
+                    return track['album']['release_date']
+                    
         return "Unknown"
     except Exception:
         return "Unknown"
