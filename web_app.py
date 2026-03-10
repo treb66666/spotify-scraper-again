@@ -88,13 +88,9 @@ def get_release_date_from_spotify(sp, artist_name, track_name):
         return "Unknown"
 
 async def perform_search(artist_input):
-    # Try to use secure secrets, fall back to hardcoded if not configured yet
-    try:
-        CLIENT_ID = st.secrets["SPOTIPY_CLIENT_ID"]
-        CLIENT_SECRET = st.secrets["SPOTIPY_CLIENT_SECRET"]
-    except (KeyError, FileNotFoundError):
-        CLIENT_ID = "1d7660677d5b4567b86bfa2d730eacd7"
-        CLIENT_SECRET = "37a4d9cd968e43ad851074944d2df8e7"
+    # Securely load credentials from Streamlit Secrets
+    CLIENT_ID = st.secrets["SPOTIPY_CLIENT_ID"]
+    CLIENT_SECRET = st.secrets["SPOTIPY_CLIENT_SECRET"]
     
     auth_manager = SpotifyClientCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
     sp = spotipy.Spotify(auth_manager=auth_manager)
